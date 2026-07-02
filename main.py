@@ -2,7 +2,6 @@ import os
 import requests
 from groq import Groq
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 from dotenv import load_dotenv
@@ -10,18 +9,12 @@ from dotenv import load_dotenv
 load_dotenv()
 API_KEY = os.getenv("CRICKET_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 app = FastAPI(title="CricAI Backend")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 @app.get("/")
 def root():
@@ -238,65 +231,9 @@ def get_match_report(match_id: str):
         "match_report": report,
     }
 
-@app.get("/news")
-def get_news():
-    url = "https://newsapi.org/v2/everything"
-    params = {
-        "q": "cricket",
-        "language": "en",
-        "sortBy": "publishedAt",
-        "pageSize": 10,
-        "apiKey": os.getenv("NEWS_API_KEY"),
-    }
-    response = requests.get(url, params=params)
-    data = response.json()
-
-    if data.get("status") != "ok":
-        return {"error": "Failed to fetch news"}
-
-    articles = []
-    for a in data.get("articles", []):
-        # Generate AI summary for each article
-        title = a.get("title", "")
-        description = a.get("description", "")
-
-        if not title or title == "[Removed]":
-            continue
-
-        prompt = f"""You are CricAI's news analyst. Given this cricket news headline and description,
-write a single sharp sentence that captures the key insight — what actually matters and why.
-Sound like a knowledgeable cricket journalist, not a news bot.
-
-Title: {title}
-Description: {description}
-
-Write only the one-sentence insight, no preamble."""
-
-        try:
-            ai_response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.7,
-                max_tokens=100,
-            )
-            ai_summary = ai_response.choices[0].message.content.strip()
-        except Exception:
-            ai_summary = description or title
-
-        articles.append({
-            "title": title,
-            "description": description,
-            "ai_summary": ai_summary,
-            "source": a.get("source", {}).get("name", ""),
-            "url": a.get("url", ""),
-            "publishedAt": a.get("publishedAt", ""),
-            "urlToImage": a.get("urlToImage", ""),
-        })
-
-    return {"count": len(articles), "articles": articles}
 
 class ChatMessage(BaseModel):
-    role: str  # "user" or "assistant"
+    role: str
     content: str
 
 
@@ -325,7 +262,6 @@ def chat(request: ChatRequest):
         return {"error": "Failed to fetch matches"}
 
     matches = data.get("data", [])
-
     relevant_match = find_relevant_match(request.message, matches)
 
     if relevant_match:
@@ -363,3 +299,91 @@ understand follow-up questions and context.
         answer = f"Sorry, I couldn't process that: {str(e)}"
 
     return {"question": request.message, "answer": answer}
+
+
+@app.get("/news")
+def get_news():
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": "cricket",
+        "apiKey": NEWS_API_KEY,
+        "language": "en",
+        "sortBy": "publishedAt",
+        "pageSize": 20,
+    }
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    if data.get("status") != "ok":
+        return {"error": "Failed to fetch news"}
+
+    articles = []
+    for a in data.get("articles", []):
+        if a.get("title") and a.get("url"):
+            articles.append({
+                "title": a.get("title"),
+                "description": a.get("description", ""),
+                "url": a.get("url"),
+                "source": a.get("source", {}).get("name", ""),
+                "publishedAt": a.get("publishedAt", ""),
+                "urlToImage": a.get("urlToImage", ""),
+            })
+
+    return {"count": len(articles), "articles": articles}
+
+
+def summarize_news(title, description):
+    if not description:
+        return None
+
+    prompt = f"""You are CricAI's news editor. Summarize this cricket news in 2 sharp sentences.
+Be specific, use key facts, and sound like a knowledgeable cricket journalist.
+
+Title: {title}
+Description: {description}
+
+Write only the summary, no preamble."""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,
+            max_tokens=100,
+        )
+        return response.choices[0].message.content.strip()
+    except:
+        return description
+
+
+@app.get("/news/summary")
+def get_news_summary():
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q": "cricket",
+        "apiKey": NEWS_API_KEY,
+        "language": "en",
+        "sortBy": "publishedAt",
+        "pageSize": 10,
+    }
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    if data.get("status") != "ok":
+        return {"error": "Failed to fetch news"}
+
+    articles = []
+    for a in data.get("articles", []):
+        if not a.get("title") or not a.get("url"):
+            continue
+        ai_summary = summarize_news(a.get("title"), a.get("description", ""))
+        articles.append({
+            "title": a.get("title"),
+            "ai_summary": ai_summary,
+            "url": a.get("url"),
+            "source": a.get("source", {}).get("name", ""),
+            "publishedAt": a.get("publishedAt", ""),
+            "urlToImage": a.get("urlToImage", ""),
+        })
+
+    return {"count": len(articles), "articles": articles}
