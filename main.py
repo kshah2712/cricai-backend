@@ -386,4 +386,63 @@ def get_news_summary():
             "urlToImage": a.get("urlToImage", ""),
         })
 
+@app.get("/series")
+def get_series():
+    url = "https://api.cricapi.com/v1/series"
+    params = {"apikey": API_KEY, "offset": 0}
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    if data.get("status") != "success":
+        return {"error": "Failed to fetch series"}
+
+    series_list = []
+    for s in data.get("data", []):
+        series_list.append({
+            "id": s.get("id"),
+            "name": s.get("name"),
+            "startDate": s.get("startDate"),
+            "endDate": s.get("endDate"),
+            "odi": s.get("odi", 0),
+            "t20": s.get("t20", 0),
+            "test": s.get("test", 0),
+            "squads": s.get("squads", 0),
+            "matches": s.get("matches", 0),
+        })
+
+    return {"count": len(series_list), "series": series_list}
+
+
+@app.get("/series/{series_id}")
+def get_series_matches(series_id: str):
+    url = "https://api.cricapi.com/v1/series_info"
+    params = {"apikey": API_KEY, "id": series_id}
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    if data.get("status") != "success":
+        return {"error": "Failed to fetch series info"}
+
+    info = data.get("data", {})
+    matches = info.get("matchList", [])
+
+    series_matches = []
+    for m in matches:
+        series_matches.append({
+            "id": m.get("id"),
+            "name": m.get("name"),
+            "date": m.get("date"),
+            "dateTimeGMT": m.get("dateTimeGMT"),
+            "teams": m.get("teams"),
+            "venue": m.get("venue"),
+            "status": m.get("status"),
+            "matchType": m.get("matchType"),
+        })
+
+    return {
+        "series_id": series_id,
+        "name": info.get("info", {}).get("name", ""),
+        "matches": series_matches,
+    }
+
     return {"count": len(articles), "articles": articles}
