@@ -445,4 +445,36 @@ def get_series_matches(series_id: str):
         "matches": series_matches,
     }
 
+@app.get("/rankings/{type}")
+def get_rankings(type: str):
+    # type can be: teams, batting, bowling, allrounder
+    url = "https://api.cricapi.com/v1/rankings"
+    params = {"apikey": API_KEY, "type": type}
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    if data.get("status") != "success":
+        return {"error": f"Failed to fetch rankings for type: {type}"}
+
+    return {
+        "type": type,
+        "rankings": data.get("data", [])
+    }
+
+
+@app.get("/series/{series_id}/points")
+def get_series_points(series_id: str):
+    url = "https://api.cricapi.com/v1/series_points"
+    params = {"apikey": API_KEY, "id": series_id}
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    if data.get("status") != "success":
+        return {"error": "Points table not available for this series"}
+
+    return {
+        "series_id": series_id,
+        "points_table": data.get("data", [])
+    }
+    
     return {"count": len(articles), "articles": articles}
