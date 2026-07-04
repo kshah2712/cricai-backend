@@ -352,7 +352,7 @@ Write only the summary, no preamble."""
             max_tokens=100,
         )
         return response.choices[0].message.content.strip()
-    except:
+    except Exception:
         return description
 
 
@@ -386,6 +386,9 @@ def get_news_summary():
             "urlToImage": a.get("urlToImage", ""),
         })
 
+    return {"count": len(articles), "articles": articles}
+
+
 @app.get("/series")
 def get_series():
     url = "https://api.cricapi.com/v1/series"
@@ -413,7 +416,23 @@ def get_series():
     return {"count": len(series_list), "series": series_list}
 
 
-@app.get("/series/{series_id}")
+@app.get("/series/{series_id}/points")
+def get_series_points(series_id: str):
+    url = "https://api.cricapi.com/v1/series_points"
+    params = {"apikey": API_KEY, "id": series_id}
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    if data.get("status") != "success":
+        return {"error": "Points table not available for this series"}
+
+    return {
+        "series_id": series_id,
+        "points_table": data.get("data", [])
+    }
+
+
+@app.get("/series/{series_id}/matches")
 def get_series_matches(series_id: str):
     url = "https://api.cricapi.com/v1/series_info"
     params = {"apikey": API_KEY, "id": series_id}
@@ -445,9 +464,17 @@ def get_series_matches(series_id: str):
         "matches": series_matches,
     }
 
+
+@app.get("/rankings-debug/{type}")
+def get_rankings_debug(type: str):
+    url = "https://api.cricapi.com/v1/rankings"
+    params = {"apikey": API_KEY, "type": type}
+    response = requests.get(url, params=params)
+    return response.json()
+
+
 @app.get("/rankings/{type}")
 def get_rankings(type: str):
-    # type can be: teams, batting, bowling, allrounder
     url = "https://api.cricapi.com/v1/rankings"
     params = {"apikey": API_KEY, "type": type}
     response = requests.get(url, params=params)
@@ -460,21 +487,3 @@ def get_rankings(type: str):
         "type": type,
         "rankings": data.get("data", [])
     }
-
-
-@app.get("/series/{series_id}/points")
-def get_series_points(series_id: str):
-    url = "https://api.cricapi.com/v1/series_points"
-    params = {"apikey": API_KEY, "id": series_id}
-    response = requests.get(url, params=params)
-    data = response.json()
-
-    if data.get("status") != "success":
-        return {"error": "Points table not available for this series"}
-
-    return {
-        "series_id": series_id,
-        "points_table": data.get("data", [])
-    }
-    
-    return {"count": len(articles), "articles": articles}
