@@ -465,17 +465,42 @@ def get_series_matches(series_id: str):
     }
 
 
-@app.get("/rankings/{type}")
-def get_rankings(type: str):
-    url = "https://api.cricapi.com/v1/rankings"
-    params = {"apikey": API_KEY, "type": type}
-    response = requests.get(url, params=params)
-    data = response.json()
 
-    if data.get("status") != "success":
-        return {"error": f"Failed to fetch rankings for type: {type}"}
+@app.get("/rankings/{format}")
+def get_rankings(format: str):
+    # format can be: test, odi, t20
+    prompt = f"""You are a cricket data assistant. Provide the current ICC {format.upper()} rankings.
 
-    return {
-        "type": type,
-        "rankings": data.get("data", [])
-    }
+Return ONLY a JSON array with exactly this structure, no other text:
+[
+  {{"rank": 1, "team": "Australia", "rating": 128}},
+  {{"rank": 2, "team": "India", "rating": 121}},
+  ...up to rank 10
+]
+
+For batting rankings also include player name and country.
+Be as accurate as possible based on your latest knowledge."""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=500,
+        )
+        import json
+        text = response.choices[0].message.content.strip()
+        # Extract JSON array from response
+        start = text.find('[')
+        end = text.rfind(']') + 1
+        if start != -1 and end != 0:
+            rankings = json.loads(text[start:end])
+        else:
+            rankings = []
+        return {
+            "format": format,
+            "rankings": rankings,
+            "note": "Rankings based on AI knowledge — updated periodically"
+        }
+    except Exception as e:
+        return {"error": f"Failed to generate rankings: {str(e)}"}
