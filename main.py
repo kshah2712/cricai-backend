@@ -465,14 +465,6 @@ def get_series_matches(series_id: str):
     }
 
 
-@app.get("/rankings-debug/{type}")
-def get_rankings_debug(type: str):
-    url = "https://api.cricapi.com/v1/rankings"
-    params = {"apikey": API_KEY, "type": type}
-    response = requests.get(url, params=params)
-    return response.json()
-
-
 @app.get("/rankings/{type}")
 def get_rankings(type: str):
     url = "https://api.cricapi.com/v1/rankings"
