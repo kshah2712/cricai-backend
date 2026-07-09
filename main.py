@@ -517,8 +517,9 @@ def get_featured_match():
 
     live = [m for m in matches if m.get("matchStarted") and not m.get("matchEnded")]
     upcoming = [m for m in matches if not m.get("matchStarted") and not m.get("matchEnded")]
+    recent = [m for m in matches if m.get("matchStarted") and m.get("matchEnded")]
 
-    featured = live[0] if live else (upcoming[0] if upcoming else None)
+    featured = live[0] if live else (upcoming[0] if upcoming else (recent[0] if recent else None))
 
     if not featured:
         return {"error": "No featured match available"}
@@ -562,6 +563,7 @@ Respond in exactly this JSON format, no other text:
         "status": status,
         "score": score,
         "matchStarted": featured.get("matchStarted"),
+        "matchEnded": featured.get("matchEnded"),
         "venue": featured.get("venue"),
         "ai_prediction": prediction,
     }
