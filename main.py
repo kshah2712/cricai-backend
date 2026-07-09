@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 from groq import Groq
 from fastapi import FastAPI
@@ -465,10 +466,8 @@ def get_series_matches(series_id: str):
     }
 
 
-
 @app.get("/rankings/{format}")
 def get_rankings(format: str):
-    # format can be: test, odi, t20
     prompt = f"""You are a cricket data assistant. Provide the current ICC {format.upper()} rankings.
 
 Return ONLY a JSON array with exactly this structure, no other text:
@@ -488,9 +487,7 @@ Be as accurate as possible based on your latest knowledge."""
             temperature=0.1,
             max_tokens=500,
         )
-        import json
         text = response.choices[0].message.content.strip()
-        # Extract JSON array from response
         start = text.find('[')
         end = text.rfind(']') + 1
         if start != -1 and end != 0:
@@ -504,3 +501,67 @@ Be as accurate as possible based on your latest knowledge."""
         }
     except Exception as e:
         return {"error": f"Failed to generate rankings: {str(e)}"}
+
+
+@app.get("/predict/featured")
+def get_featured_match():
+    url = "https://api.cricapi.com/v1/currentMatches"
+    params = {"apikey": API_KEY, "offset": 0}
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    if data.get("status") != "success":
+        return {"error": "Failed to fetch matches"}
+
+    matches = data.get("data", [])
+
+    live = [m for m in matches if m.get("matchStarted") and not m.get("matchEnded")]
+    upcoming = [m for m in matches if not m.get("matchStarted") and not m.get("matchEnded")]
+
+    featured = live[0] if live else (upcoming[0] if upcoming else None)
+
+    if not featured:
+        return {"error": "No featured match available"}
+
+    teams = featured.get("teams", [])
+    score = featured.get("score", [])
+    status = featured.get("status", "")
+
+    prompt = f"""You are CricAI's prediction engine. Based on this match data, predict the winner
+and give a confidence percentage. Be specific and data-driven.
+
+Teams: {teams}
+Status: {status}
+Score: {score}
+
+Respond in exactly this JSON format, no other text:
+{{"predicted_winner": "Team Name", "confidence": 65, "reasoning": "2 sentence reason"}}"""
+
+    try:
+        ai_response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=150,
+        )
+        text = ai_response.choices[0].message.content.strip()
+        start = text.find('{')
+        end = text.rfind('}') + 1
+        prediction = json.loads(text[start:end])
+    except Exception:
+        prediction = {
+            "predicted_winner": teams[0] if teams else "TBD",
+            "confidence": 50,
+            "reasoning": "Insufficient data for prediction"
+        }
+
+    return {
+        "match_id": featured.get("id"),
+        "name": featured.get("name"),
+        "teams": teams,
+        "status": status,
+        "score": score,
+        "matchStarted": featured.get("matchStarted"),
+        "venue": featured.get("venue"),
+        "ai_prediction": prediction,
+    }
