@@ -567,3 +567,75 @@ Respond in exactly this JSON format, no other text:
         "venue": featured.get("venue"),
         "ai_prediction": prediction,
     }
+
+@app.get("/scorecard/{match_id}")
+def get_scorecard(match_id: str):
+    url = "https://api.cricapi.com/v1/match_scorecard"
+    params = {"apikey": API_KEY, "id": match_id}
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    if data.get("status") != "success":
+        return {"error": "Detailed scorecard not available"}
+
+    return {"match_id": match_id, "scorecard": data.get("data", {})}
+
+
+def generate_motm_prediction(teams, status, score):
+    prompt = f"""You are CricAI's match analyst. Based on this match data, predict who was
+the most valuable player (Man of the Match).
+
+Teams: {teams}
+Result: {status}
+Scores: {score}
+
+Respond in exactly this JSON format, no other text:
+{{"predicted_motm": "Player Name", "team": "Team Name", "reasoning": "2 sentence explanation"}}
+
+If you cannot determine a specific player from the data, make an educated guess based
+on the winning team and match context. Do not say unknown."""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=150,
+        )
+        text = response.choices[0].message.content.strip()
+        start = text.find('{')
+        end = text.rfind('}') + 1
+        return json.loads(text[start:end])
+    except Exception:
+        return {
+            "predicted_motm": "Top performer",
+            "team": teams[0] if teams else "",
+            "reasoning": "Based on match context and winning team performance"
+        }
+
+
+@app.get("/motm/{match_id}")
+def get_motm(match_id: str):
+    url = "https://api.cricapi.com/v1/match_info"
+    params = {"apikey": API_KEY, "id": match_id}
+    response = requests.get(url, params=params)
+    data = response.json()
+
+    if data.get("status") != "success":
+        return {"error": "Failed to fetch match info"}
+
+    match = data.get("data", {})
+    teams = match.get("teams", [])
+    score = match.get("score", [])
+    status = match.get("status", "")
+    official_motm = match.get("playerOfMatch", None)
+    official_motm_id = match.get("playerOfMatchTeam", None)
+
+    ai_motm = generate_motm_prediction(teams, status, score)
+
+    return {
+        "match_id": match_id,
+        "official_motm": official_motm,
+        "official_motm_team": official_motm_id,
+        "ai_motm": ai_motm,
+    }
