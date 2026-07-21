@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import requests
 from groq import Groq
 from fastapi import FastAPI
@@ -16,18 +17,50 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 app = FastAPI(title="CricAI Backend")
 
+# ─── Simple In-Memory Cache ───
+_cache = {}
+
+def cache_get(key: str):
+    if key in _cache:
+        data, expiry = _cache[key]
+        if time.time() < expiry:
+            return data
+        del _cache[key]
+    return None
+
+def cache_set(key: str, data, ttl_seconds: int):
+    _cache[key] = (data, time.time() + ttl_seconds)
+
+def cached_cricket_request(url: str, params: dict, ttl: int = 60):
+    cache_key = url + str(sorted(params.items()))
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+    response = requests.get(url, params=params)
+    data = response.json()
+    if data.get("status") == "success":
+        cache_set(cache_key, data, ttl)
+    return data
+
 
 @app.get("/")
 def root():
     return {"message": "CricAI backend is running"}
 
 
+@app.get("/cache/status")
+def cache_status():
+    return {
+        "cached_keys": len(_cache),
+        "keys": list(_cache.keys())
+    }
+
+
 @app.get("/matches")
 def get_matches():
     url = "https://api.cricapi.com/v1/currentMatches"
     params = {"apikey": API_KEY, "offset": 0}
-    response = requests.get(url, params=params)
-    data = response.json()
+    data = cached_cricket_request(url, params, ttl=60)
 
     if data.get("status") != "success":
         return {"error": "Failed to fetch matches"}
@@ -74,10 +107,14 @@ Write only the insight, no preamble."""
 
 @app.get("/insights/{match_id}")
 def get_insights(match_id: str):
+    cache_key = f"insights_{match_id}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     url = "https://api.cricapi.com/v1/match_info"
     params = {"apikey": API_KEY, "id": match_id}
-    response = requests.get(url, params=params)
-    data = response.json()
+    data = cached_cricket_request(url, params, ttl=120)
 
     if data.get("status") != "success":
         return {"error": "Failed to fetch match info"}
@@ -89,13 +126,15 @@ def get_insights(match_id: str):
 
     ai_summary = generate_ai_insight(teams, status, score)
 
-    return {
+    result = {
         "match_id": match_id,
         "teams": teams,
         "status": status,
         "ai_insight": ai_summary,
         "score_breakdown": score,
     }
+    cache_set(cache_key, result, 120)
+    return result
 
 
 def generate_prematch_insight(teams, venue, toss_winner, toss_choice):
@@ -125,10 +164,14 @@ Write only the insight, no preamble."""
 
 @app.get("/pre-match/{match_id}")
 def get_prematch(match_id: str):
+    cache_key = f"prematch_{match_id}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     url = "https://api.cricapi.com/v1/match_info"
     params = {"apikey": API_KEY, "id": match_id}
-    response = requests.get(url, params=params)
-    data = response.json()
+    data = cached_cricket_request(url, params, ttl=120)
 
     if data.get("status") != "success":
         return {"error": "Failed to fetch match info"}
@@ -141,7 +184,7 @@ def get_prematch(match_id: str):
 
     ai_preview = generate_prematch_insight(teams, venue, toss_winner, toss_choice)
 
-    return {
+    result = {
         "match_id": match_id,
         "teams": teams,
         "venue": venue,
@@ -149,6 +192,8 @@ def get_prematch(match_id: str):
         "toss_choice": toss_choice,
         "ai_preview": ai_preview,
     }
+    cache_set(cache_key, result, 300)
+    return result
 
 
 def generate_match_report(teams, status, score, venue):
@@ -199,10 +244,14 @@ that aren't in the data provided."""
 
 @app.get("/match-report/{match_id}")
 def get_match_report(match_id: str):
+    cache_key = f"report_{match_id}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     url = "https://api.cricapi.com/v1/match_info"
     params = {"apikey": API_KEY, "id": match_id}
-    response = requests.get(url, params=params)
-    data = response.json()
+    data = cached_cricket_request(url, params, ttl=120)
 
     if data.get("status") != "success":
         return {"error": "Failed to fetch match info"}
@@ -224,13 +273,15 @@ def get_match_report(match_id: str):
 
     report = generate_match_report(teams, status, score, venue)
 
-    return {
+    result = {
         "match_id": match_id,
         "teams": teams,
         "venue": venue,
         "status": status,
         "match_report": report,
     }
+    cache_set(cache_key, result, 3600)
+    return result
 
 
 class ChatMessage(BaseModel):
@@ -256,8 +307,7 @@ def find_relevant_match(message, matches):
 def chat(request: ChatRequest):
     url = "https://api.cricapi.com/v1/currentMatches"
     params = {"apikey": API_KEY, "offset": 0}
-    response = requests.get(url, params=params)
-    data = response.json()
+    data = cached_cricket_request(url, params, ttl=60)
 
     if data.get("status") != "success":
         return {"error": "Failed to fetch matches"}
@@ -304,6 +354,11 @@ understand follow-up questions and context.
 
 @app.get("/news")
 def get_news():
+    cache_key = "news_all"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     url = "https://newsapi.org/v2/everything"
     params = {
         "q": "cricket",
@@ -330,7 +385,9 @@ def get_news():
                 "urlToImage": a.get("urlToImage", ""),
             })
 
-    return {"count": len(articles), "articles": articles}
+    result = {"count": len(articles), "articles": articles}
+    cache_set(cache_key, result, 1800)
+    return result
 
 
 def summarize_news(title, description):
@@ -359,6 +416,11 @@ Write only the summary, no preamble."""
 
 @app.get("/news/summary")
 def get_news_summary():
+    cache_key = "news_summary"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     url = "https://newsapi.org/v2/everything"
     params = {
         "q": "cricket",
@@ -387,15 +449,21 @@ def get_news_summary():
             "urlToImage": a.get("urlToImage", ""),
         })
 
-    return {"count": len(articles), "articles": articles}
+    result = {"count": len(articles), "articles": articles}
+    cache_set(cache_key, result, 1800)
+    return result
 
 
 @app.get("/series")
 def get_series():
+    cache_key = "series_all"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     url = "https://api.cricapi.com/v1/series"
     params = {"apikey": API_KEY, "offset": 0}
-    response = requests.get(url, params=params)
-    data = response.json()
+    data = cached_cricket_request(url, params, ttl=3600)
 
     if data.get("status") != "success":
         return {"error": "Failed to fetch series"}
@@ -414,31 +482,43 @@ def get_series():
             "matches": s.get("matches", 0),
         })
 
-    return {"count": len(series_list), "series": series_list}
+    result = {"count": len(series_list), "series": series_list}
+    cache_set(cache_key, result, 3600)
+    return result
 
 
 @app.get("/series/{series_id}/points")
 def get_series_points(series_id: str):
+    cache_key = f"points_{series_id}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     url = "https://api.cricapi.com/v1/series_points"
     params = {"apikey": API_KEY, "id": series_id}
-    response = requests.get(url, params=params)
-    data = response.json()
+    data = cached_cricket_request(url, params, ttl=1800)
 
     if data.get("status") != "success":
         return {"error": "Points table not available for this series"}
 
-    return {
+    result = {
         "series_id": series_id,
         "points_table": data.get("data", [])
     }
+    cache_set(cache_key, result, 1800)
+    return result
 
 
 @app.get("/series/{series_id}/matches")
 def get_series_matches(series_id: str):
+    cache_key = f"series_matches_{series_id}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     url = "https://api.cricapi.com/v1/series_info"
     params = {"apikey": API_KEY, "id": series_id}
-    response = requests.get(url, params=params)
-    data = response.json()
+    data = cached_cricket_request(url, params, ttl=1800)
 
     if data.get("status") != "success":
         return {"error": "Failed to fetch series info"}
@@ -459,15 +539,22 @@ def get_series_matches(series_id: str):
             "matchType": m.get("matchType"),
         })
 
-    return {
+    result = {
         "series_id": series_id,
         "name": info.get("info", {}).get("name", ""),
         "matches": series_matches,
     }
+    cache_set(cache_key, result, 1800)
+    return result
 
 
 @app.get("/rankings/{format}")
 def get_rankings(format: str):
+    cache_key = f"rankings_{format}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     prompt = f"""You are a cricket data assistant. Provide the current ICC {format.upper()} rankings.
 
 Return ONLY a JSON array with exactly this structure, no other text:
@@ -494,27 +581,117 @@ Be as accurate as possible based on your latest knowledge."""
             rankings = json.loads(text[start:end])
         else:
             rankings = []
-        return {
+        result = {
             "format": format,
             "rankings": rankings,
             "note": "Rankings based on AI knowledge — updated periodically"
         }
+        cache_set(cache_key, result, 86400)
+        return result
     except Exception as e:
         return {"error": f"Failed to generate rankings: {str(e)}"}
 
 
+@app.get("/scorecard/{match_id}")
+def get_scorecard(match_id: str):
+    cache_key = f"scorecard_{match_id}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    url = "https://api.cricapi.com/v1/match_scorecard"
+    params = {"apikey": API_KEY, "id": match_id}
+    data = cached_cricket_request(url, params, ttl=120)
+
+    if data.get("status") != "success":
+        return {"error": "Detailed scorecard not available"}
+
+    result = {"match_id": match_id, "scorecard": data.get("data", {})}
+    cache_set(cache_key, result, 120)
+    return result
+
+
+def generate_motm_prediction(teams, status, score):
+    prompt = f"""You are CricAI's match analyst. Based on this match data, predict who was
+the most valuable player (Man of the Match).
+
+Teams: {teams}
+Result: {status}
+Scores: {score}
+
+Respond in exactly this JSON format, no other text:
+{{"predicted_motm": "Player Name", "team": "Team Name", "reasoning": "2 sentence explanation"}}
+
+If you cannot determine a specific player from the data, make an educated guess based
+on the winning team and match context. Do not say unknown."""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=150,
+        )
+        text = response.choices[0].message.content.strip()
+        start = text.find('{')
+        end = text.rfind('}') + 1
+        return json.loads(text[start:end])
+    except Exception:
+        return {
+            "predicted_motm": "Top performer",
+            "team": teams[0] if teams else "",
+            "reasoning": "Based on match context and winning team performance"
+        }
+
+
+@app.get("/motm/{match_id}")
+def get_motm(match_id: str):
+    cache_key = f"motm_{match_id}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
+    url = "https://api.cricapi.com/v1/match_info"
+    params = {"apikey": API_KEY, "id": match_id}
+    data = cached_cricket_request(url, params, ttl=120)
+
+    if data.get("status") != "success":
+        return {"error": "Failed to fetch match info"}
+
+    match = data.get("data", {})
+    teams = match.get("teams", [])
+    score = match.get("score", [])
+    status = match.get("status", "")
+    official_motm = match.get("playerOfMatch", None)
+    official_motm_team = match.get("playerOfMatchTeam", None)
+
+    ai_motm = generate_motm_prediction(teams, status, score)
+
+    result = {
+        "match_id": match_id,
+        "official_motm": official_motm,
+        "official_motm_team": official_motm_team,
+        "ai_motm": ai_motm,
+    }
+    cache_set(cache_key, result, 3600)
+    return result
+
+
 @app.get("/predict/featured")
 def get_featured_match():
+    cache_key = "featured_match"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+
     url = "https://api.cricapi.com/v1/currentMatches"
     params = {"apikey": API_KEY, "offset": 0}
-    response = requests.get(url, params=params)
-    data = response.json()
+    data = cached_cricket_request(url, params, ttl=60)
 
     if data.get("status") != "success":
         return {"error": "Failed to fetch matches"}
 
     matches = data.get("data", [])
-
     live = [m for m in matches if m.get("matchStarted") and not m.get("matchEnded")]
     upcoming = [m for m in matches if not m.get("matchStarted") and not m.get("matchEnded")]
     recent = [m for m in matches if m.get("matchStarted") and m.get("matchEnded")]
@@ -556,7 +733,7 @@ Respond in exactly this JSON format, no other text:
             "reasoning": "Insufficient data for prediction"
         }
 
-    return {
+    result = {
         "match_id": featured.get("id"),
         "name": featured.get("name"),
         "teams": teams,
@@ -567,75 +744,5 @@ Respond in exactly this JSON format, no other text:
         "venue": featured.get("venue"),
         "ai_prediction": prediction,
     }
-
-@app.get("/scorecard/{match_id}")
-def get_scorecard(match_id: str):
-    url = "https://api.cricapi.com/v1/match_scorecard"
-    params = {"apikey": API_KEY, "id": match_id}
-    response = requests.get(url, params=params)
-    data = response.json()
-
-    if data.get("status") != "success":
-        return {"error": "Detailed scorecard not available"}
-
-    return {"match_id": match_id, "scorecard": data.get("data", {})}
-
-
-def generate_motm_prediction(teams, status, score):
-    prompt = f"""You are CricAI's match analyst. Based on this match data, predict who was
-the most valuable player (Man of the Match).
-
-Teams: {teams}
-Result: {status}
-Scores: {score}
-
-Respond in exactly this JSON format, no other text:
-{{"predicted_motm": "Player Name", "team": "Team Name", "reasoning": "2 sentence explanation"}}
-
-If you cannot determine a specific player from the data, make an educated guess based
-on the winning team and match context. Do not say unknown."""
-
-    try:
-        response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=150,
-        )
-        text = response.choices[0].message.content.strip()
-        start = text.find('{')
-        end = text.rfind('}') + 1
-        return json.loads(text[start:end])
-    except Exception:
-        return {
-            "predicted_motm": "Top performer",
-            "team": teams[0] if teams else "",
-            "reasoning": "Based on match context and winning team performance"
-        }
-
-
-@app.get("/motm/{match_id}")
-def get_motm(match_id: str):
-    url = "https://api.cricapi.com/v1/match_info"
-    params = {"apikey": API_KEY, "id": match_id}
-    response = requests.get(url, params=params)
-    data = response.json()
-
-    if data.get("status") != "success":
-        return {"error": "Failed to fetch match info"}
-
-    match = data.get("data", {})
-    teams = match.get("teams", [])
-    score = match.get("score", [])
-    status = match.get("status", "")
-    official_motm = match.get("playerOfMatch", None)
-    official_motm_id = match.get("playerOfMatchTeam", None)
-
-    ai_motm = generate_motm_prediction(teams, status, score)
-
-    return {
-        "match_id": match_id,
-        "official_motm": official_motm,
-        "official_motm_team": official_motm_id,
-        "ai_motm": ai_motm,
-    }
+    cache_set(cache_key, result, 60)
+    return result
