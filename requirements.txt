@@ -4,3 +4,5 @@ requests
 python-dotenv
 groq
 pydantic
+sqlalchemy
+psycopg2-binary

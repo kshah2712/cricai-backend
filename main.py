@@ -7,6 +7,12 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Optional
 from dotenv import load_dotenv
+from datetime import datetime
+from sqlalchemy import Integer
+import uuid
+from sqlalchemy.orm import Session
+from fastapi import Depends
+from database import init_db, get_db, User, Prediction
 
 load_dotenv()
 API_KEY = os.getenv("CRICKET_API_KEY")
@@ -16,6 +22,7 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 app = FastAPI(title="CricAI Backend")
+init_db()
 
 # ─── Simple In-Memory Cache ───
 _cache = {}
@@ -746,3 +753,209 @@ Respond in exactly this JSON format, no other text:
     }
     cache_set(cache_key, result, 60)
     return result
+
+
+class SubmitPredictionRequest(BaseModel):
+    user_id: str
+    match_id: str
+    predicted_winner: str
+
+
+@app.post("/predictions/submit")
+def submit_prediction(request: SubmitPredictionRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == request.user_id).first()
+    if not user:
+        user = User(id=request.user_id)
+        db.add(user)
+        db.commit()
+
+    existing = db.query(Prediction).filter(
+        Prediction.user_id == request.user_id,
+        Prediction.match_id == request.match_id
+    ).first()
+    if existing:
+        return {"error": "You've already predicted this match", "prediction_id": existing.id}
+
+    url = "https://api.cricapi.com/v1/match_info"
+    params = {"apikey": API_KEY, "id": request.match_id}
+    data = cached_cricket_request(url, params, ttl=120)
+
+    match = data.get("data", {}) if data.get("status") == "success" else {}
+    teams = match.get("teams", [])
+    status = match.get("status", "")
+    score = match.get("score", [])
+    match_name = match.get("name", "")
+
+    ai_prediction = {"predicted_winner": "TBD", "confidence": 50, "reasoning": "Insufficient data"}
+    if teams:
+        prompt = f"""You are CricAI's prediction engine. Based on this match data, predict the winner
+and give a confidence percentage. Be specific and data-driven.
+
+Teams: {teams}
+Status: {status}
+Score: {score}
+
+Respond in exactly this JSON format, no other text:
+{{"predicted_winner": "Team Name", "confidence": 65, "reasoning": "2 sentence reason"}}"""
+        try:
+            ai_response = groq_client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=150,
+            )
+            text = ai_response.choices[0].message.content.strip()
+            start = text.find('{')
+            end = text.rfind('}') + 1
+            ai_prediction = json.loads(text[start:end])
+        except Exception:
+            pass
+
+    new_prediction = Prediction(
+        user_id=request.user_id,
+        match_id=request.match_id,
+        match_name=match_name,
+        teams=" vs ".join(teams) if teams else None,
+        user_predicted_winner=request.predicted_winner,
+        ai_predicted_winner=ai_prediction.get("predicted_winner"),
+        ai_confidence=ai_prediction.get("confidence"),
+        ai_reasoning=ai_prediction.get("reasoning"),
+        status="pending",
+    )
+    db.add(new_prediction)
+    db.commit()
+    db.refresh(new_prediction)
+
+    return {
+        "prediction_id": new_prediction.id,
+        "your_pick": new_prediction.user_predicted_winner,
+        "ai_pick": new_prediction.ai_predicted_winner,
+        "ai_confidence": new_prediction.ai_confidence,
+        "ai_reasoning": new_prediction.ai_reasoning,
+    }
+
+
+@app.get("/predictions/user/{user_id}")
+def get_user_predictions(user_id: str, db: Session = Depends(get_db)):
+    predictions = db.query(Prediction).filter(Prediction.user_id == user_id).order_by(Prediction.created_at.desc()).all()
+
+    return {
+        "count": len(predictions),
+        "predictions": [
+            {
+                "id": p.id,
+                "match_id": p.match_id,
+                "match_name": p.match_name,
+                "teams": p.teams,
+                "your_pick": p.user_predicted_winner,
+                "ai_pick": p.ai_predicted_winner,
+                "ai_confidence": p.ai_confidence,
+                "actual_winner": p.actual_winner,
+                "status": p.status,
+                "user_correct": p.user_correct,
+                "ai_correct": p.ai_correct,
+                "created_at": p.created_at.isoformat() if p.created_at else None,
+            }
+            for p in predictions
+        ]
+    }
+
+
+@app.post("/predictions/resolve/{match_id}")
+def resolve_predictions(match_id: str, db: Session = Depends(get_db)):
+    url = "https://api.cricapi.com/v1/match_info"
+    params = {"apikey": API_KEY, "id": match_id}
+    data = cached_cricket_request(url, params, ttl=120)
+
+    if data.get("status") != "success":
+        return {"error": "Could not fetch match result"}
+
+    match = data.get("data", {})
+    if not match.get("matchEnded"):
+        return {"error": "Match hasn't ended yet"}
+
+    status_text = match.get("status", "")
+    teams = match.get("teams", [])
+
+    actual_winner = None
+    for team in teams:
+        if team.lower() in status_text.lower():
+            actual_winner = team
+            break
+
+    if not actual_winner:
+        return {"error": "Could not determine winner from match status", "status_text": status_text}
+
+    pending = db.query(Prediction).filter(
+        Prediction.match_id == match_id,
+        Prediction.status == "pending"
+    ).all()
+
+    for p in pending:
+        p.actual_winner = actual_winner
+        p.user_correct = (p.user_predicted_winner == actual_winner)
+        p.ai_correct = (p.ai_predicted_winner == actual_winner)
+        p.status = "resolved"
+        p.resolved_at = datetime.utcnow()
+
+    db.commit()
+
+    return {
+        "match_id": match_id,
+        "actual_winner": actual_winner,
+        "resolved_count": len(pending),
+    }
+
+
+@app.post("/predictions/resolve-all")
+def resolve_all_pending(db: Session = Depends(get_db)):
+    pending_match_ids = [
+        row[0] for row in db.query(Prediction.match_id)
+        .filter(Prediction.status == "pending")
+        .distinct()
+        .all()
+    ]
+
+    resolved_summary = []
+    for match_id in pending_match_ids:
+        result = resolve_predictions(match_id, db)
+        if "error" not in result:
+            resolved_summary.append(result)
+
+    return {"resolved_matches": resolved_summary, "checked": len(pending_match_ids)}
+
+
+@app.get("/leaderboard")
+def get_leaderboard(db: Session = Depends(get_db)):
+    from sqlalchemy import func
+
+    rows = db.query(
+        Prediction.user_id,
+        func.count(Prediction.id).label("total"),
+        func.sum(func.cast(Prediction.user_correct, Integer)).label("correct")
+    ).filter(Prediction.status == "resolved").group_by(Prediction.user_id).all()
+
+    leaderboard = []
+    for user_id, total, correct in rows:
+        correct = correct or 0
+        leaderboard.append({
+            "user_id": user_id,
+            "total_predictions": total,
+            "correct_predictions": correct,
+            "accuracy": round((correct / total) * 100, 1) if total > 0 else 0,
+        })
+
+    leaderboard.sort(key=lambda x: (x["correct_predictions"], x["accuracy"]), reverse=True)
+
+    ai_rows = db.query(Prediction).filter(Prediction.status == "resolved").all()
+    ai_total = len(ai_rows)
+    ai_correct = sum(1 for p in ai_rows if p.ai_correct)
+
+    return {
+        "leaderboard": leaderboard,
+        "ai_stats": {
+            "total_predictions": ai_total,
+            "correct_predictions": ai_correct,
+            "accuracy": round((ai_correct / ai_total) * 100, 1) if ai_total > 0 else 0,
+        }
+    }
