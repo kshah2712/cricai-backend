@@ -13,20 +13,20 @@ import uuid
 from sqlalchemy.orm import Session
 from fastapi import Depends
 from database import init_db, get_db, User, Prediction
-
+ 
 load_dotenv()
 API_KEY = os.getenv("CRICKET_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
-
+ 
 groq_client = Groq(api_key=GROQ_API_KEY)
-
+ 
 app = FastAPI(title="CricAI Backend")
 init_db()
-
+ 
 # ─── Simple In-Memory Cache ───
 _cache = {}
-
+ 
 def cache_get(key: str):
     if key in _cache:
         data, expiry = _cache[key]
@@ -34,10 +34,10 @@ def cache_get(key: str):
             return data
         del _cache[key]
     return None
-
+ 
 def cache_set(key: str, data, ttl_seconds: int):
     _cache[key] = (data, time.time() + ttl_seconds)
-
+ 
 def cached_cricket_request(url: str, params: dict, ttl: int = 60):
     cache_key = url + str(sorted(params.items()))
     cached = cache_get(cache_key)
@@ -48,30 +48,30 @@ def cached_cricket_request(url: str, params: dict, ttl: int = 60):
     if data.get("status") == "success":
         cache_set(cache_key, data, ttl)
     return data
-
-
+ 
+ 
 @app.get("/")
 def root():
     return {"message": "CricAI backend is running"}
-
-
+ 
+ 
 @app.get("/cache/status")
 def cache_status():
     return {
         "cached_keys": len(_cache),
         "keys": list(_cache.keys())
     }
-
-
+ 
+ 
 @app.get("/matches")
 def get_matches():
     url = "https://api.cricapi.com/v1/currentMatches"
     params = {"apikey": API_KEY, "offset": 0}
     data = cached_cricket_request(url, params, ttl=60)
-
+ 
     if data.get("status") != "success":
         return {"error": "Failed to fetch matches"}
-
+ 
     matches = []
     for m in data.get("data", []):
         matches.append({
@@ -84,25 +84,25 @@ def get_matches():
             "matchStarted": m.get("matchStarted"),
             "matchEnded": m.get("matchEnded"),
         })
-
+ 
     return {"count": len(matches), "matches": matches}
-
-
+ 
+ 
 def generate_ai_insight(teams, status, score):
     prompt = f"""You are a sharp cricket analyst writing for a mobile app called CricAI.
 Given this match data, write a short, insightful 2-3 sentence summary that explains
 WHY the result happened — not just what the score was. Be specific, use the numbers,
 and sound like a knowledgeable commentator, not a stat sheet.
-
+ 
 Teams: {teams}
 Status: {status}
 Score breakdown: {score}
-
+ 
 Write only the insight, no preamble."""
-
+ 
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
             max_tokens=200,
@@ -110,29 +110,29 @@ Write only the insight, no preamble."""
         return response.choices[0].message.content.strip()
     except Exception as e:
         return f"AI insight unavailable: {str(e)}"
-
-
+ 
+ 
 @app.get("/insights/{match_id}")
 def get_insights(match_id: str):
     cache_key = f"insights_{match_id}"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
+ 
     url = "https://api.cricapi.com/v1/match_info"
     params = {"apikey": API_KEY, "id": match_id}
     data = cached_cricket_request(url, params, ttl=120)
-
+ 
     if data.get("status") != "success":
         return {"error": "Failed to fetch match info"}
-
+ 
     match = data.get("data", {})
     teams = match.get("teams", [])
     score = match.get("score", [])
     status = match.get("status", "")
-
+ 
     ai_summary = generate_ai_insight(teams, status, score)
-
+ 
     result = {
         "match_id": match_id,
         "teams": teams,
@@ -142,24 +142,24 @@ def get_insights(match_id: str):
     }
     cache_set(cache_key, result, 120)
     return result
-
-
+ 
+ 
 def generate_prematch_insight(teams, venue, toss_winner, toss_choice):
     prompt = f"""You are a sharp cricket analyst writing a pre-match preview for the CricAI app.
 Given the details below, write a short, engaging 2-3 sentence "what to watch for" prediction.
 Mention any tactical edge implied by the toss decision or venue, and what fans should expect.
 If information is limited, focus on what IS known rather than inventing details.
-
+ 
 Teams: {teams}
 Venue: {venue}
 Toss winner: {toss_winner}
 Toss decision: {toss_choice}
-
+ 
 Write only the insight, no preamble."""
-
+ 
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
             max_tokens=200,
@@ -167,30 +167,30 @@ Write only the insight, no preamble."""
         return response.choices[0].message.content.strip()
     except Exception as e:
         return f"AI insight unavailable: {str(e)}"
-
-
+ 
+ 
 @app.get("/pre-match/{match_id}")
 def get_prematch(match_id: str):
     cache_key = f"prematch_{match_id}"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
+ 
     url = "https://api.cricapi.com/v1/match_info"
     params = {"apikey": API_KEY, "id": match_id}
     data = cached_cricket_request(url, params, ttl=120)
-
+ 
     if data.get("status") != "success":
         return {"error": "Failed to fetch match info"}
-
+ 
     match = data.get("data", {})
     teams = match.get("teams", [])
     venue = match.get("venue", "Unknown venue")
     toss_winner = match.get("tossWinner", "Not available yet")
     toss_choice = match.get("tossChoice", "Not available yet")
-
+ 
     ai_preview = generate_prematch_insight(teams, venue, toss_winner, toss_choice)
-
+ 
     result = {
         "match_id": match_id,
         "teams": teams,
@@ -201,45 +201,45 @@ def get_prematch(match_id: str):
     }
     cache_set(cache_key, result, 300)
     return result
-
-
+ 
+ 
 def generate_match_report(teams, status, score, venue):
     prompt = f"""You are CricAI's lead match analyst, writing a complete post-match report
 for the CricAI app — the kind of in-depth report a professional cricket journalist would write,
 not a simple scorecard recap.
-
+ 
 Match data:
 Teams: {teams}
 Venue: {venue}
 Result: {status}
 Score breakdown: {score}
-
+ 
 Write a structured match report with these exact sections, using the headers below:
-
+ 
 SUMMARY:
 A 2-3 sentence overview of how the match unfolded and the final result.
-
+ 
 TURNING POINT:
 Identify the single most decisive phase or moment of the match (based on the score
 breakdown — e.g. a low-scoring innings, a collapse, a big over count vs wickets ratio)
 and explain why it decided the outcome. Be specific using the numbers given.
-
+ 
 KEY PERFORMERS:
 Based on the score data available, note which team/innings stood out and why
 (e.g. strong run rate, depth in batting). If individual player data isn't available,
 focus on team-level standout performances.
-
+ 
 TACTICAL READ:
 A short tactical explanation of why the winning side prevailed — pacing, run rate
 pressure, required rate, or similar reasoning grounded in the actual numbers.
-
+ 
 Keep the tone sharp, confident, and analytical — like a knowledgeable cricket
 journalist, not generic filler text. Do not invent specific player names or stats
 that aren't in the data provided."""
-
+ 
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
             max_tokens=600,
@@ -247,29 +247,29 @@ that aren't in the data provided."""
         return response.choices[0].message.content.strip()
     except Exception as e:
         return f"AI match report unavailable: {str(e)}"
-
-
+ 
+ 
 @app.get("/match-report/{match_id}")
 def get_match_report(match_id: str):
     cache_key = f"report_{match_id}"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
+ 
     url = "https://api.cricapi.com/v1/match_info"
     params = {"apikey": API_KEY, "id": match_id}
     data = cached_cricket_request(url, params, ttl=120)
-
+ 
     if data.get("status") != "success":
         return {"error": "Failed to fetch match info"}
-
+ 
     match = data.get("data", {})
     teams = match.get("teams", [])
     score = match.get("score", [])
     status = match.get("status", "")
     venue = match.get("venue", "Unknown venue")
     match_ended = match.get("matchEnded", False)
-
+ 
     if not match_ended:
         return {
             "match_id": match_id,
@@ -277,9 +277,9 @@ def get_match_report(match_id: str):
             "status": status,
             "message": "Match report will be available once the match concludes.",
         }
-
+ 
     report = generate_match_report(teams, status, score, venue)
-
+ 
     result = {
         "match_id": match_id,
         "teams": teams,
@@ -289,18 +289,18 @@ def get_match_report(match_id: str):
     }
     cache_set(cache_key, result, 3600)
     return result
-
-
+ 
+ 
 class ChatMessage(BaseModel):
     role: str
     content: str
-
-
+ 
+ 
 class ChatRequest(BaseModel):
     message: str
     history: Optional[List[ChatMessage]] = []
-
-
+ 
+ 
 def find_relevant_match(message, matches):
     message_lower = message.lower()
     for m in matches:
@@ -308,20 +308,20 @@ def find_relevant_match(message, matches):
             if team.lower() in message_lower:
                 return m
     return None
-
-
+ 
+ 
 @app.post("/chat")
 def chat(request: ChatRequest):
     url = "https://api.cricapi.com/v1/currentMatches"
     params = {"apikey": API_KEY, "offset": 0}
     data = cached_cricket_request(url, params, ttl=60)
-
+ 
     if data.get("status") != "success":
         return {"error": "Failed to fetch matches"}
-
+ 
     matches = data.get("data", [])
     relevant_match = find_relevant_match(request.message, matches)
-
+ 
     if relevant_match:
         context = f"""Relevant match data:
 Teams: {relevant_match.get('teams')}
@@ -331,23 +331,23 @@ Venue: {relevant_match.get('venue')}"""
     else:
         summary_list = [f"{m.get('name')}: {m.get('status')}" for m in matches[:10]]
         context = "Recent matches:\n" + "\n".join(summary_list)
-
+ 
     system_prompt = f"""You are CricAI, a knowledgeable cricket assistant inside a mobile app.
 Answer questions using the match data below when relevant. Be concise, specific, and
 conversational — like a sharp cricket friend, not a stats dump. If the data doesn't
 contain what's needed to answer, say so honestly. Use the conversation history to
 understand follow-up questions and context.
-
+ 
 {context}"""
-
+ 
     messages = [{"role": "system", "content": system_prompt}]
     for msg in request.history:
         messages.append({"role": msg.role, "content": msg.content})
     messages.append({"role": "user", "content": request.message})
-
+ 
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=messages,
             temperature=0.7,
             max_tokens=250,
@@ -355,17 +355,17 @@ understand follow-up questions and context.
         answer = response.choices[0].message.content.strip()
     except Exception as e:
         answer = f"Sorry, I couldn't process that: {str(e)}"
-
+ 
     return {"question": request.message, "answer": answer}
-
-
+ 
+ 
 @app.get("/news")
 def get_news():
     cache_key = "news_all"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
+ 
     url = "https://newsapi.org/v2/everything"
     params = {
         "q": "cricket",
@@ -376,10 +376,10 @@ def get_news():
     }
     response = requests.get(url, params=params)
     data = response.json()
-
+ 
     if data.get("status") != "ok":
         return {"error": "Failed to fetch news"}
-
+ 
     articles = []
     for a in data.get("articles", []):
         if a.get("title") and a.get("url"):
@@ -391,27 +391,27 @@ def get_news():
                 "publishedAt": a.get("publishedAt", ""),
                 "urlToImage": a.get("urlToImage", ""),
             })
-
+ 
     result = {"count": len(articles), "articles": articles}
     cache_set(cache_key, result, 1800)
     return result
-
-
+ 
+ 
 def summarize_news(title, description):
     if not description:
         return None
-
+ 
     prompt = f"""You are CricAI's news editor. Summarize this cricket news in 2 sharp sentences.
 Be specific, use key facts, and sound like a knowledgeable cricket journalist.
-
+ 
 Title: {title}
 Description: {description}
-
+ 
 Write only the summary, no preamble."""
-
+ 
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.5,
             max_tokens=100,
@@ -419,15 +419,15 @@ Write only the summary, no preamble."""
         return response.choices[0].message.content.strip()
     except Exception:
         return description
-
-
+ 
+ 
 @app.get("/news/summary")
 def get_news_summary():
     cache_key = "news_summary"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
+ 
     url = "https://newsapi.org/v2/everything"
     params = {
         "q": "cricket",
@@ -438,10 +438,10 @@ def get_news_summary():
     }
     response = requests.get(url, params=params)
     data = response.json()
-
+ 
     if data.get("status") != "ok":
         return {"error": "Failed to fetch news"}
-
+ 
     articles = []
     for a in data.get("articles", []):
         if not a.get("title") or not a.get("url"):
@@ -455,26 +455,26 @@ def get_news_summary():
             "publishedAt": a.get("publishedAt", ""),
             "urlToImage": a.get("urlToImage", ""),
         })
-
+ 
     result = {"count": len(articles), "articles": articles}
     cache_set(cache_key, result, 1800)
     return result
-
-
+ 
+ 
 @app.get("/series")
 def get_series():
     cache_key = "series_all"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
+ 
     url = "https://api.cricapi.com/v1/series"
     params = {"apikey": API_KEY, "offset": 0}
     data = cached_cricket_request(url, params, ttl=3600)
-
+ 
     if data.get("status") != "success":
         return {"error": "Failed to fetch series"}
-
+ 
     series_list = []
     for s in data.get("data", []):
         series_list.append({
@@ -488,51 +488,51 @@ def get_series():
             "squads": s.get("squads", 0),
             "matches": s.get("matches", 0),
         })
-
+ 
     result = {"count": len(series_list), "series": series_list}
     cache_set(cache_key, result, 3600)
     return result
-
-
+ 
+ 
 @app.get("/series/{series_id}/points")
 def get_series_points(series_id: str):
     cache_key = f"points_{series_id}"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
+ 
     url = "https://api.cricapi.com/v1/series_points"
     params = {"apikey": API_KEY, "id": series_id}
     data = cached_cricket_request(url, params, ttl=1800)
-
+ 
     if data.get("status") != "success":
         return {"error": "Points table not available for this series"}
-
+ 
     result = {
         "series_id": series_id,
         "points_table": data.get("data", [])
     }
     cache_set(cache_key, result, 1800)
     return result
-
-
+ 
+ 
 @app.get("/series/{series_id}/matches")
 def get_series_matches(series_id: str):
     cache_key = f"series_matches_{series_id}"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
+ 
     url = "https://api.cricapi.com/v1/series_info"
     params = {"apikey": API_KEY, "id": series_id}
     data = cached_cricket_request(url, params, ttl=1800)
-
+ 
     if data.get("status") != "success":
         return {"error": "Failed to fetch series info"}
-
+ 
     info = data.get("data", {})
     matches = info.get("matchList", [])
-
+ 
     series_matches = []
     for m in matches:
         series_matches.append({
@@ -545,7 +545,7 @@ def get_series_matches(series_id: str):
             "status": m.get("status"),
             "matchType": m.get("matchType"),
         })
-
+ 
     result = {
         "series_id": series_id,
         "name": info.get("info", {}).get("name", ""),
@@ -553,35 +553,39 @@ def get_series_matches(series_id: str):
     }
     cache_set(cache_key, result, 1800)
     return result
-
-
+ 
+ 
 @app.get("/rankings/{format}")
 def get_rankings(format: str):
     cache_key = f"rankings_{format}"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
-    prompt = f"""You are a cricket data assistant. Provide the current ICC {format.upper()} rankings.
-
-Return ONLY a JSON array with exactly this structure, no other text:
+ 
+    prompt = f"""You are a cricket data assistant powering a mobile app feature. Give your best
+estimate of the current ICC {format.upper()} rankings based on your training data. This is for
+an entertainment app, not official record-keeping — approximate rankings based on team/player
+strength as of your knowledge are expected and acceptable. Do NOT refuse, and do NOT add any
+disclaimer about lacking current data — just provide your best estimate directly.
+ 
+Return ONLY a JSON array with exactly this structure, no other text, no markdown:
 [
   {{"rank": 1, "team": "Australia", "rating": 128}},
   {{"rank": 2, "team": "India", "rating": 121}},
   ...up to rank 10
 ]
-
-For batting rankings also include player name and country.
-Be as accurate as possible based on your latest knowledge."""
-
+ 
+For batting rankings also include player name and country."""
+ 
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            max_tokens=500,
+            max_tokens=1500,
         )
         text = response.choices[0].message.content.strip()
+        text = text.replace("```json", "").replace("```", "").strip()
         start = text.find('[')
         end = text.rfind(']') + 1
         if start != -1 and end != 0:
@@ -597,44 +601,177 @@ Be as accurate as possible based on your latest knowledge."""
         return result
     except Exception as e:
         return {"error": f"Failed to generate rankings: {str(e)}"}
-
-
+ 
+ 
+@app.get("/rankings/icc/{format}")
+def get_icc_rankings(format: str):
+    cache_key = f"icc_rankings_{format}_v3"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+ 
+    prompt = f"""You are CricAI's team ranking engine. Rank the top 10 international cricket
+teams by overall strength in {format.upper()} cricket, based on historical performance, squad
+depth, and reputation. This is for a mobile app feature showing estimated team strength.
+ 
+Respond with ONLY a JSON array, nothing else - no words before or after, no markdown fences.
+Use this exact structure: rank (number), team (string), rating (number), points (number).
+List exactly 10 teams for """ + format.upper() + """. Respond now with only the JSON array."""
+ 
+    try:
+        response = groq_client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.6,
+            max_tokens=1500,
+        )
+        text = response.choices[0].message.content.strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+        start = text.find('[')
+        end = text.rfind(']') + 1
+        rankings = json.loads(text[start:end]) if start != -1 and end != 0 else []
+        result = {
+            "format": format,
+            "source": "Estimated Team Rankings",
+            "rankings": rankings,
+            "note": "AI-estimated team strength rankings based on historical performance - not official ICC data"
+        }
+        cache_set(cache_key, result, 86400)
+        return result
+    except Exception as e:
+        return {"error": "Failed to generate rankings: " + str(e)}
+ 
+ 
+@app.get("/rankings/cricai/{format}")
+def get_cricai_power_rankings(format: str):
+    """CricAI's own power ranking — grounded in actual recent match results
+    pulled from the live match feed, not just general AI knowledge."""
+    cache_key = f"cricai_rankings_{format}"
+    cached = cache_get(cache_key)
+    if cached:
+        return cached
+ 
+    url = "https://api.cricapi.com/v1/currentMatches"
+    params = {"apikey": API_KEY, "offset": 0}
+    data = cached_cricket_request(url, params, ttl=3600)
+ 
+    recent_results = []
+    if data.get("status") == "success":
+        for m in data.get("data", []):
+            if m.get("matchEnded") and format.lower() in (m.get("matchType", "") or "").lower():
+                recent_results.append(f"{m.get('name')}: {m.get('status')}")
+ 
+    results_context = "\n".join(recent_results[:20]) if recent_results else "No recent match results available in current feed."
+ 
+    prompt = f"""You are CricAI's power ranking engine. Based on the recent {format.upper()} match
+results below, generate CricAI's own team power ranking — your independent analytical take,
+which may differ from official ICC rankings based on recent form and momentum.
+ 
+Recent {format.upper()} results:
+{results_context}
+ 
+Return ONLY a JSON array with exactly this structure, no other text:
+[
+  {{"rank": 1, "team": "Team Name", "power_score": 92, "trend": "up", "note": "short reason based on recent form"}},
+  ...up to rank 10
+]
+ 
+trend must be one of: "up", "down", "steady". If recent results are limited, base rankings on
+general team strength but note this in each team's "note" field. Include all major {format.upper()}
+playing nations even if not in the recent results."""
+ 
+    try:
+        response = groq_client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=2000,
+        )
+        text = response.choices[0].message.content.strip()
+        text = text.replace("```json", "").replace("```", "").strip()
+        start = text.find('[')
+        end = text.rfind(']') + 1
+        rankings = json.loads(text[start:end]) if start != -1 and end != 0 else []
+        result = {
+            "format": format,
+            "source": "CricAI Power Ranking",
+            "rankings": rankings,
+            "grounded_in_results": len(recent_results),
+            "note": "CricAI's own analysis based on recent form — may differ from official ICC rankings"
+        }
+        cache_set(cache_key, result, 21600)
+        return result
+    except Exception as e:
+        return {"error": f"Failed to generate CricAI rankings: {str(e)}"}
+ 
+ 
+@app.get("/debug/rankings/{format}")
+def debug_rankings(format: str):
+    prompt = f"""You are a cricket data assistant. Provide the current official ICC {format.upper()} team rankings.
+ 
+Return ONLY a JSON array with exactly this structure, no other text:
+[
+  {{"rank": 1, "team": "Australia", "rating": 128, "points": 1520}},
+  {{"rank": 2, "team": "India", "rating": 121, "points": 1450}},
+  ...up to rank 10
+]
+ 
+Be as accurate as possible based on your latest knowledge of official ICC standings."""
+ 
+    try:
+        response = groq_client.chat.completions.create(
+            model="openai/gpt-oss-120b",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=1500,
+        )
+        raw_text = response.choices[0].message.content
+        finish_reason = response.choices[0].finish_reason
+        return {
+            "raw_text": raw_text,
+            "raw_text_length": len(raw_text) if raw_text else 0,
+            "finish_reason": finish_reason,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+ 
+ 
 @app.get("/scorecard/{match_id}")
 def get_scorecard(match_id: str):
     cache_key = f"scorecard_{match_id}"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
+ 
     url = "https://api.cricapi.com/v1/match_scorecard"
     params = {"apikey": API_KEY, "id": match_id}
     data = cached_cricket_request(url, params, ttl=120)
-
+ 
     if data.get("status") != "success":
         return {"error": "Detailed scorecard not available"}
-
+ 
     result = {"match_id": match_id, "scorecard": data.get("data", {})}
     cache_set(cache_key, result, 120)
     return result
-
-
+ 
+ 
 def generate_motm_prediction(teams, status, score):
     prompt = f"""You are CricAI's match analyst. Based on this match data, predict who was
 the most valuable player (Man of the Match).
-
+ 
 Teams: {teams}
 Result: {status}
 Scores: {score}
-
+ 
 Respond in exactly this JSON format, no other text:
 {{"predicted_motm": "Player Name", "team": "Team Name", "reasoning": "2 sentence explanation"}}
-
+ 
 If you cannot determine a specific player from the data, make an educated guess based
 on the winning team and match context. Do not say unknown."""
-
+ 
     try:
         response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=150,
@@ -649,31 +786,31 @@ on the winning team and match context. Do not say unknown."""
             "team": teams[0] if teams else "",
             "reasoning": "Based on match context and winning team performance"
         }
-
-
+ 
+ 
 @app.get("/motm/{match_id}")
 def get_motm(match_id: str):
     cache_key = f"motm_{match_id}"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
+ 
     url = "https://api.cricapi.com/v1/match_info"
     params = {"apikey": API_KEY, "id": match_id}
     data = cached_cricket_request(url, params, ttl=120)
-
+ 
     if data.get("status") != "success":
         return {"error": "Failed to fetch match info"}
-
+ 
     match = data.get("data", {})
     teams = match.get("teams", [])
     score = match.get("score", [])
     status = match.get("status", "")
     official_motm = match.get("playerOfMatch", None)
     official_motm_team = match.get("playerOfMatchTeam", None)
-
+ 
     ai_motm = generate_motm_prediction(teams, status, score)
-
+ 
     result = {
         "match_id": match_id,
         "official_motm": official_motm,
@@ -682,49 +819,49 @@ def get_motm(match_id: str):
     }
     cache_set(cache_key, result, 3600)
     return result
-
-
+ 
+ 
 @app.get("/predict/featured")
 def get_featured_match():
     cache_key = "featured_match"
     cached = cache_get(cache_key)
     if cached:
         return cached
-
+ 
     url = "https://api.cricapi.com/v1/currentMatches"
     params = {"apikey": API_KEY, "offset": 0}
     data = cached_cricket_request(url, params, ttl=60)
-
+ 
     if data.get("status") != "success":
         return {"error": "Failed to fetch matches"}
-
+ 
     matches = data.get("data", [])
     live = [m for m in matches if m.get("matchStarted") and not m.get("matchEnded")]
     upcoming = [m for m in matches if not m.get("matchStarted") and not m.get("matchEnded")]
     recent = [m for m in matches if m.get("matchStarted") and m.get("matchEnded")]
-
+ 
     featured = live[0] if live else (upcoming[0] if upcoming else (recent[0] if recent else None))
-
+ 
     if not featured:
         return {"error": "No featured match available"}
-
+ 
     teams = featured.get("teams", [])
     score = featured.get("score", [])
     status = featured.get("status", "")
-
+ 
     prompt = f"""You are CricAI's prediction engine. Based on this match data, predict the winner
 and give a confidence percentage. Be specific and data-driven.
-
+ 
 Teams: {teams}
 Status: {status}
 Score: {score}
-
+ 
 Respond in exactly this JSON format, no other text:
 {{"predicted_winner": "Team Name", "confidence": 65, "reasoning": "2 sentence reason"}}"""
-
+ 
     try:
         ai_response = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model="openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=150,
@@ -739,7 +876,7 @@ Respond in exactly this JSON format, no other text:
             "confidence": 50,
             "reasoning": "Insufficient data for prediction"
         }
-
+ 
     result = {
         "match_id": featured.get("id"),
         "name": featured.get("name"),
@@ -753,14 +890,14 @@ Respond in exactly this JSON format, no other text:
     }
     cache_set(cache_key, result, 60)
     return result
-
-
+ 
+ 
 class SubmitPredictionRequest(BaseModel):
     user_id: str
     match_id: str
     predicted_winner: str
-
-
+ 
+ 
 @app.post("/predictions/submit")
 def submit_prediction(request: SubmitPredictionRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.id == request.user_id).first()
@@ -768,38 +905,38 @@ def submit_prediction(request: SubmitPredictionRequest, db: Session = Depends(ge
         user = User(id=request.user_id)
         db.add(user)
         db.commit()
-
+ 
     existing = db.query(Prediction).filter(
         Prediction.user_id == request.user_id,
         Prediction.match_id == request.match_id
     ).first()
     if existing:
         return {"error": "You've already predicted this match", "prediction_id": existing.id}
-
+ 
     url = "https://api.cricapi.com/v1/match_info"
     params = {"apikey": API_KEY, "id": request.match_id}
     data = cached_cricket_request(url, params, ttl=120)
-
+ 
     match = data.get("data", {}) if data.get("status") == "success" else {}
     teams = match.get("teams", [])
     status = match.get("status", "")
     score = match.get("score", [])
     match_name = match.get("name", "")
-
+ 
     ai_prediction = {"predicted_winner": "TBD", "confidence": 50, "reasoning": "Insufficient data"}
     if teams:
         prompt = f"""You are CricAI's prediction engine. Based on this match data, predict the winner
 and give a confidence percentage. Be specific and data-driven.
-
+ 
 Teams: {teams}
 Status: {status}
 Score: {score}
-
+ 
 Respond in exactly this JSON format, no other text:
 {{"predicted_winner": "Team Name", "confidence": 65, "reasoning": "2 sentence reason"}}"""
         try:
             ai_response = groq_client.chat.completions.create(
-                model="llama-3.3-70b-versatile",
+                model="openai/gpt-oss-120b",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=150,
@@ -810,7 +947,7 @@ Respond in exactly this JSON format, no other text:
             ai_prediction = json.loads(text[start:end])
         except Exception:
             pass
-
+ 
     new_prediction = Prediction(
         user_id=request.user_id,
         match_id=request.match_id,
@@ -825,7 +962,7 @@ Respond in exactly this JSON format, no other text:
     db.add(new_prediction)
     db.commit()
     db.refresh(new_prediction)
-
+ 
     return {
         "prediction_id": new_prediction.id,
         "your_pick": new_prediction.user_predicted_winner,
@@ -833,12 +970,12 @@ Respond in exactly this JSON format, no other text:
         "ai_confidence": new_prediction.ai_confidence,
         "ai_reasoning": new_prediction.ai_reasoning,
     }
-
-
+ 
+ 
 @app.get("/predictions/user/{user_id}")
 def get_user_predictions(user_id: str, db: Session = Depends(get_db)):
     predictions = db.query(Prediction).filter(Prediction.user_id == user_id).order_by(Prediction.created_at.desc()).all()
-
+ 
     return {
         "count": len(predictions),
         "predictions": [
@@ -859,54 +996,54 @@ def get_user_predictions(user_id: str, db: Session = Depends(get_db)):
             for p in predictions
         ]
     }
-
-
+ 
+ 
 @app.post("/predictions/resolve/{match_id}")
 def resolve_predictions(match_id: str, db: Session = Depends(get_db)):
     url = "https://api.cricapi.com/v1/match_info"
     params = {"apikey": API_KEY, "id": match_id}
     data = cached_cricket_request(url, params, ttl=120)
-
+ 
     if data.get("status") != "success":
         return {"error": "Could not fetch match result"}
-
+ 
     match = data.get("data", {})
     if not match.get("matchEnded"):
         return {"error": "Match hasn't ended yet"}
-
+ 
     status_text = match.get("status", "")
     teams = match.get("teams", [])
-
+ 
     actual_winner = None
     for team in teams:
         if team.lower() in status_text.lower():
             actual_winner = team
             break
-
+ 
     if not actual_winner:
         return {"error": "Could not determine winner from match status", "status_text": status_text}
-
+ 
     pending = db.query(Prediction).filter(
         Prediction.match_id == match_id,
         Prediction.status == "pending"
     ).all()
-
+ 
     for p in pending:
         p.actual_winner = actual_winner
         p.user_correct = (p.user_predicted_winner == actual_winner)
         p.ai_correct = (p.ai_predicted_winner == actual_winner)
         p.status = "resolved"
         p.resolved_at = datetime.utcnow()
-
+ 
     db.commit()
-
+ 
     return {
         "match_id": match_id,
         "actual_winner": actual_winner,
         "resolved_count": len(pending),
     }
-
-
+ 
+ 
 @app.post("/predictions/resolve-all")
 def resolve_all_pending(db: Session = Depends(get_db)):
     pending_match_ids = [
@@ -915,26 +1052,26 @@ def resolve_all_pending(db: Session = Depends(get_db)):
         .distinct()
         .all()
     ]
-
+ 
     resolved_summary = []
     for match_id in pending_match_ids:
         result = resolve_predictions(match_id, db)
         if "error" not in result:
             resolved_summary.append(result)
-
+ 
     return {"resolved_matches": resolved_summary, "checked": len(pending_match_ids)}
-
-
+ 
+ 
 @app.get("/leaderboard")
 def get_leaderboard(db: Session = Depends(get_db)):
     from sqlalchemy import func
-
+ 
     rows = db.query(
         Prediction.user_id,
         func.count(Prediction.id).label("total"),
         func.sum(func.cast(Prediction.user_correct, Integer)).label("correct")
     ).filter(Prediction.status == "resolved").group_by(Prediction.user_id).all()
-
+ 
     leaderboard = []
     for user_id, total, correct in rows:
         correct = correct or 0
@@ -944,13 +1081,13 @@ def get_leaderboard(db: Session = Depends(get_db)):
             "correct_predictions": correct,
             "accuracy": round((correct / total) * 100, 1) if total > 0 else 0,
         })
-
+ 
     leaderboard.sort(key=lambda x: (x["correct_predictions"], x["accuracy"]), reverse=True)
-
+ 
     ai_rows = db.query(Prediction).filter(Prediction.status == "resolved").all()
     ai_total = len(ai_rows)
     ai_correct = sum(1 for p in ai_rows if p.ai_correct)
-
+ 
     return {
         "leaderboard": leaderboard,
         "ai_stats": {
