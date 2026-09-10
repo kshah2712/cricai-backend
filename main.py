@@ -22,6 +22,15 @@ NEWS_API_KEY = os.getenv("NEWS_API_KEY")
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 app = FastAPI(title="CricAI Backend")
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 init_db()
 
 # ─── Simple In-Memory Cache ───
